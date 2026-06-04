@@ -3,169 +3,88 @@ import pandas as pd
 import openpyxl
 import plotly.express as px
 
-# 1. Configuración de la página
+# 1. Configuración de la página del tablero (Canvas)
 st.set_page_config(page_title="Tablero de Productividad Médica", layout="wide")
 
+# Función auxiliar para identificar si una celda es de color café (excluyendo amarillos y vacíos)
+def es_color_cafe(cell):
+    if not hasattr(cell, 'fill') or not cell.fill or not cell.fill.start_color:
+        return False
+    color_str = str(cell.fill.start_color.index).upper()
+    
+    # Filtrar celdas sin color (blancas o transparentes)
+    if color_str in ['00000000', '000000', 'NONE', '']:
+        return False
+    
+    # Filtrar tonos amarillos comunes en Excel (ej: FFFF00, FFF2CC, etc.)
+    if 'FF' in color_str and any(y in color_str for y in ['FFFF00', 'FFF2CC', 'FFFF99', 'FFFFCC', 'FFEB9C', 'FFFFC000']):
+        return False
+        
+    return True
+
+# 2. Función para cargar y procesar los datos con la nueva lógica
 @st.cache_data
 def cargar_y_procesar_datos(archivo_subido):
-    # Leer el archivo con Pandas
     df = pd.read_excel(archivo_subido)
     df.columns = df.columns.str.strip() # Limpiar espacios en los nombres
     
-    # "Rebobinar" el archivo al inicio
+    # Rebobinar el archivo para openpyxl
     archivo_subido.seek(0)
-    
-    # Leer el archivo con openpyxl para detectar los colores
     wb = openpyxl.load_workbook(archivo_subido, data_only=True)
     hoja = wb.active
     
     estados = []
-    
-    # EL ARREGLO: Límite exacto de filas (Datos reales + 1 del encabezado)
     max_filas = len(df) + 1
     
-    # Iterar solo hasta donde hay datos reales
+    # Iterar sobre las filas reales de Excel
     for row in hoja.iter_rows(min_row=2, max_row=max_filas, max_col=hoja.max_column):
-        colores_cafe_en_fila = 0
+        # Columna F es el índice 5 (DOCUMENTO)
+        cell_f = row[5] 
         
-        # Contar celdas coloreadas
-        for cell in row:
-            if hasattr(cell, 'fill') and cell.fill.start_color.index != '00000000' and type(cell.fill.start_color.index) == str:
-                colores_cafe_en_fila += 1
-                
-        # Aplicar la lógica de colores
-        if colores_cafe_en_fila > 3: 
-            estados.append("Cancelada (Médico no alcanzó)")
-        elif colores_cafe_en_fila > 0 and colores_cafe_en_fila <= 3: 
-            estados.append("Efectiva (Rechazo en puerta)")
-        else: 
-            estados.append("Efectiva (Realizada)")
+        f_es_cafe = es_color_cafe(cell_f)
+        total_cafe_fila = sum(1 for cell in row if es_color_cafe(cell))
+        
+        # Nueva lógica de negocio definida por el usuario
+        if f_es_cafe:
+            # Si toda o la mayor parte de la fila está en café, canceló el paciente
+            if total_cafe_fila > 3: 
+                estados.append("Cancelada (Por el paciente)")
+            else:
+                # Si solo está café en la columna F, el médico no alcanzó
+                estados.append("Cancelada (Médico no alcanzó)")
+        else:
+            # Sin color o amarillo en columna F = Consulta Efectiva
+            estados.append("Consulta Efectiva")
             
-    # Seguro adicional: igualar tamaños por si hay algún desfase
+    # Ajuste preventivo de tamaños de listas
     if len(estados) > len(df):
         estados = estados[:len(df)]
     elif len(estados) < len(df):
-        estados.extend(["Efectiva (Realizada)"] * (len(df) - len(estados)))
+        estados.extend(["Consulta Efectiva"] * (len(df) - len(estados)))
             
     df['Estado_Visita'] = estados
     
-    # Determinar si la visita suma a la productividad
+    # Sumar a la productividad únicamente las Consultas Efectivas
     df['Productividad'] = df['Estado_Visita'].apply(
-        lambda x: 1 if "Efectiva" in x else 0
-    )
-    
-    return df
-    
-    # Leer el archivo con openpyxl para detectar los colores
-    wb = openpyxl.load_workbook(archivo_subido, data_only=True)
-    hoja = wb.active
-    
-    estados = []
-    
-    # Iterar sobre las filas (omitiendo la fila 1 de encabezados)
-    for row_idx, row in enumerate(hoja.iter_rows(min_row=2, max_col=hoja.max_column), start=2):
-        colores_cafe_en_fila = 0
-        
-        # Contar celdas coloreadas en la fila actual
-        for cell in row:
-            # Detectar si el color de relleno es distinto de nulo (blanco/transparente)
-            if hasattr(cell, 'fill') and cell.fill.start_color.index != '00000000' and type(cell.fill.start_color.index) == str:
-                colores_cafe_en_fila += 1
-                
-        # Aplicar la lógica de negocio según los colores
-        if colores_cafe_en_fila > 3: # Toda la fila pintada
-            estados.append("Cancelada (Médico no alcanzó)")
-        elif colores_cafe_en_fila > 0 and colores_cafe_en_fila <= 3: # Solo algunas celdas pintadas
-            estados.append("Efectiva (Rechazo en puerta)")
-        else: # Ninguna celda pintada
-            estados.append("Efectiva (Realizada)")
-            
-    df['Estado_Visita'] = estados
-    
-    # Determinar si la visita suma a la productividad (1 si es efectiva, 0 si fue cancelada)
-    df['Productividad'] = df['Estado_Visita'].apply(
-        lambda x: 1 if "Efectiva" in x else 0
+        lambda x: 1 if x == "Consulta Efectiva" else 0
     )
     
     return df
 
-# 3. Interfaz del Tablero (UI)
-st.title("📊 Tablero Interactivo: Productividad Domiciliaria")
-st.markdown("Sube la programación en formato **Excel (.xlsx)** para visualizar la productividad de los médicos.")
+# 3. Interfaz de usuario del Tablero
+st.title("📊 Tablero de Productividad Médica y Control de Metas")
+st.markdown("Carga el archivo de programación en formato **Excel (.xlsx)** para actualizar las métricas.")
 
-# Subir archivo
 archivo_subido = st.file_uploader("Selecciona tu archivo Excel", type=["xlsx"])
 
 if archivo_subido is not None:
     try:
-        # Procesar los datos
         df_procesado = cargar_y_procesar_datos(archivo_subido)
         
-        # Identificar la columna del médico (asume 'MEDICO' u otra similar, ajusta si es necesario)
-        columna_medico = 'MEDICO' if 'MEDICO' in df_procesado.columns else df_procesado.columns[0]
+        # Identificar dinámicamente columnas clave
+        col_medico = 'MEDICO' if 'MEDICO' in df_procesado.columns else df_procesado.columns[0]
+        col_genero = next((c for c in df_procesado.columns if c.upper() in ['GENERO', 'GÉNERO', 'SEXO', 'SEX']), None)
         
-        # Filtros en la barra lateral
-        st.sidebar.header("Filtros")
-        medicos_seleccionados = st.sidebar.multiselect(
-            "Seleccionar Médico(s)", 
-            options=df_procesado[columna_medico].dropna().unique()
-        )
-        
-        # Aplicar filtro si se seleccionó algún médico
-        if medicos_seleccionados:
-            df_procesado = df_procesado[df_procesado[columna_medico].isin(medicos_seleccionados)]
-            
-        # 4. Tarjetas de Resumen (KPIs)
-        st.markdown("### Resumen Global")
-        col1, col2, col3 = st.columns(3)
-        
-        total_asignadas = len(df_procesado)
-        total_efectivas = df_procesado['Productividad'].sum()
-        porcentaje_efectividad = (total_efectivas / total_asignadas) * 100 if total_asignadas > 0 else 0
-        
-        col1.metric("Total Visitas Asignadas", total_asignadas)
-        col2.metric("Total Visitas Efectivas", total_efectivas)
-        col3.metric("Productividad Global (%)", f"{porcentaje_efectividad:.1f}%")
-        
-        st.markdown("---")
-        
-        # 5. Gráficos Interactivos
-        colA, colB = st.columns(2)
-        
-        with colA:
-            st.subheader("Estado General de las Visitas")
-            fig_pie = px.pie(
-                df_procesado, 
-                names='Estado_Visita', 
-                hole=0.4, 
-                color_discrete_sequence=['#2ecc71', '#e74c3c', '#e67e22']
-            )
-            st.plotly_chart(fig_pie, use_container_width=True)
-            
-        with colB:
-            st.subheader("Productividad Efectiva por Médico")
-            df_agrupado = df_procesado.groupby(columna_medico)['Productividad'].sum().reset_index()
-            df_agrupado = df_agrupado.sort_values(by='Productividad', ascending=False)
-            
-            fig_bar = px.bar(
-                df_agrupado, 
-                x=columna_medico, 
-                y='Productividad', 
-                text='Productividad', 
-                color='Productividad', 
-                color_continuous_scale='Blues'
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-        # 6. Tabla de datos detallada
-        st.markdown("### 📋 Detalle de Pacientes Procesados")
-        # Mostramos las columnas más relevantes, si existen
-        columnas_mostrar = [c for c in ['FECHA', 'DOCUMENTO', 'APELLIDOS', 'NOMBRES', columna_medico, 'Estado_Visita'] if c in df_procesado.columns]
-        
-        if len(columnas_mostrar) > 0:
-            st.dataframe(df_procesado[columnas_mostrar], use_container_width=True)
-        else:
-            st.dataframe(df_procesado, use_container_width=True)
-
-    except Exception as e:
-        st.error(f"Ocurrió un error al procesar el archivo. Por favor verifica que sea un Excel válido. Detalle del error: {e}")
+        # Filtros laterales interactivos
+        st.sidebar.header("Filtros del Tablero")
+        medicos_sel = st.sidebar.multiselect("Filtrar por Médico", options=df_procesado
