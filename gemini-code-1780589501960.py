@@ -6,15 +6,55 @@ import plotly.express as px
 # 1. Configuración de la página
 st.set_page_config(page_title="Tablero de Productividad Médica", layout="wide")
 
-# 2. Función para cargar y procesar los datos
 @st.cache_data
 def cargar_y_procesar_datos(archivo_subido):
     # Leer el archivo con Pandas
     df = pd.read_excel(archivo_subido)
-    df.columns = df.columns.str.strip() # Limpiar espacios en los nombres de las columnas
+    df.columns = df.columns.str.strip() # Limpiar espacios en los nombres
     
-    # ¡EL TRUCO! "Rebobinar" el archivo al inicio para que openpyxl pueda leerlo
+    # "Rebobinar" el archivo al inicio
     archivo_subido.seek(0)
+    
+    # Leer el archivo con openpyxl para detectar los colores
+    wb = openpyxl.load_workbook(archivo_subido, data_only=True)
+    hoja = wb.active
+    
+    estados = []
+    
+    # EL ARREGLO: Límite exacto de filas (Datos reales + 1 del encabezado)
+    max_filas = len(df) + 1
+    
+    # Iterar solo hasta donde hay datos reales
+    for row in hoja.iter_rows(min_row=2, max_row=max_filas, max_col=hoja.max_column):
+        colores_cafe_en_fila = 0
+        
+        # Contar celdas coloreadas
+        for cell in row:
+            if hasattr(cell, 'fill') and cell.fill.start_color.index != '00000000' and type(cell.fill.start_color.index) == str:
+                colores_cafe_en_fila += 1
+                
+        # Aplicar la lógica de colores
+        if colores_cafe_en_fila > 3: 
+            estados.append("Cancelada (Médico no alcanzó)")
+        elif colores_cafe_en_fila > 0 and colores_cafe_en_fila <= 3: 
+            estados.append("Efectiva (Rechazo en puerta)")
+        else: 
+            estados.append("Efectiva (Realizada)")
+            
+    # Seguro adicional: igualar tamaños por si hay algún desfase
+    if len(estados) > len(df):
+        estados = estados[:len(df)]
+    elif len(estados) < len(df):
+        estados.extend(["Efectiva (Realizada)"] * (len(df) - len(estados)))
+            
+    df['Estado_Visita'] = estados
+    
+    # Determinar si la visita suma a la productividad
+    df['Productividad'] = df['Estado_Visita'].apply(
+        lambda x: 1 if "Efectiva" in x else 0
+    )
+    
+    return df
     
     # Leer el archivo con openpyxl para detectar los colores
     wb = openpyxl.load_workbook(archivo_subido, data_only=True)
